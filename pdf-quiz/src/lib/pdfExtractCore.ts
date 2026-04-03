@@ -4,9 +4,20 @@
 
 export function sanitizePdfExtractedText(s: string): string {
   return s
+    /**
+     * Anadolu Üni. PDF’lerinde Türkçe ı/i çoğu zaman C0 kontrol karakterleriyle kodlanıyor;
+     * bunları silmek «hangi»→«hang», «tarihte»→«tarhte», «geçmiştir»→«geçmştr» yapıyordu.
+     */
+    .replace(/\u001c/g, 'i')
     .replace(/\u001d/g, 'i')
+    .replace(/\u001e/g, 'i')
     .replace(/\u001f/g, 'i')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001c\u001e\u007f]/g, '')
+    /**
+     * Bazı gömülü fontlarda (öz. Kırgız/Kitap 8. ünite) U+008D «REVERSE LINE FEED» metin olarak
+     * noktalı i yerine düşüyor; UI’da «KrL», «cümlesnn», «hangsnde» gibi görünüyor.
+     */
+    .replace(/\u008d/g, 'i')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001b\u007f]/g, '')
 }
 
 const LINE_Y_TOL = 4

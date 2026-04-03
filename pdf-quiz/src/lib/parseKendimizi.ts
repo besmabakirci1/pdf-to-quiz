@@ -51,6 +51,27 @@ function isNextOptionLine(peek: string): boolean {
   return OPT_LINE_START.test(peek)
 }
 
+/** Kiril С (U+0421) PDF’te Latin «c.» diye çıkabiliyor; «b. c.» satırı c etiketini yutup şıkları d/e diye kaydırıyor */
+const CYRILLIC_CAPITAL_ES = '\u0421'
+
+function optionKeysHaveGap(options: QuizOption[]): boolean {
+  if (options.length < 2) return false
+  for (let i = 1; i < options.length; i++) {
+    if (options[i].key.charCodeAt(0) !== options[i - 1].key.charCodeAt(0) + 1) return true
+  }
+  return false
+}
+
+/** Sıra doğruysa anahtarları a..e olacak şekilde düzelt (metin sırasını değiştirmez) */
+function normalizeMangledMcqOptions(options: QuizOption[]): QuizOption[] {
+  const out = options.map((o) => ({ ...o }))
+  const b = out.find((o) => o.key === 'b')
+  if (b && /^c\.?\s*$/i.test(b.text.trim())) b.text = CYRILLIC_CAPITAL_ES
+  if (!optionKeysHaveGap(out)) return out
+  const letters = ['a', 'b', 'c', 'd', 'e']
+  return out.map((o, i) => ({ ...o, key: letters[i] ?? o.key }))
+}
+
 /** Kitapta görsel / işaret / şekil vb. varsa tam sayfa önizlemesi göster */
 export function questionNeedsPageFigure(stem: string): boolean {
   return /yukarıdak|aşağıdak|üstteki|alttaki|şekil|görsel|resim|fotoğraf|işaretler|bu\s+işaret|numaralan|harita|grafik|tablo|parçasındaki|verilen\s+şekil|çizim|foto\b|görüntü|diyagram|ölçek|kesit|t\.?\s*i\.?\s*d\b/i.test(
@@ -74,7 +95,7 @@ export function normalizeHyphens(text: string): string {
 }
 
 function findUnitTitleBefore(full: string, kendimiziIndex: number): string {
-  const back = full.slice(Math.max(0, kendimiziIndex - 900), kendimiziIndex)
+  const back = full.slice(Math.max(0, kendimiziIndex - 4500), kendimiziIndex)
   const lines = back
     .split(/\n/)
     .map((l) => l.trim())
@@ -149,10 +170,22 @@ function sliceBlocksBeforeYanıtAnahtarı(
 /** İçindekiler vb.: hemen ardından soru + a şıkkı yoksa atla (PDF.js satır kırılımlarına toleranslı). */
 function looksLikeRealQuizAfterHeader(rest: string): boolean {
   const head = rest.slice(0, 8000)
-  return /\n\s*1\.\s+(?!Ünite\b)[\s\S]{0,1200}?(?:\n\s*[a-e][\.\)]\s*|\n\s*[a-e]\s*\t)/i.test(
+  /** Bazı sayfalarda «Sınayalım 1. Soru» aynı satırda; satır başı zorunlu değil */
+  return /(?:^|\n)\s*1\.\s+(?!Ünite\b)[\s\S]{0,1200}?(?:\n\s*[a-e][\.\)]\s*|\n\s*[a-e]\s*\t)/i.test(
     head,
   )
 }
+
+/**
+ * «Kendimizi Sınayalım» quiz başlığı; PDF’te i’ler düşebiliyor («Kendmz Sınayalım»).
+ * «… Sınayalım Yanıt Anahtarı» ile karışmasın.
+ */
+const KENDIMIZI_QUIZ_HEADER =
+  /Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım(?!\s+Yanıt)/gi
+
+/** Aynı bozulma yanıt anahtarı satırında da olabiliyor */
+const KENDIMIZI_YANIT_BASLIK =
+  /Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı/gi
 
 /** Bazı yeni kitaplarda soru: "6\t metin?" şeklinde (nokta yok). */
 function normalizeTabNumberedQuestions(s: string): string {
@@ -186,21 +219,25 @@ export function normalizeQuestionBlockLayout(s: string): string {
 
 function sliceQuestionBodies(full: string): { unitTitle: string; body: string }[] {
   const out: { unitTitle: string; body: string }[] = []
-  const marker = /Kendimizi\s+Sınayalım/gi
+  KENDIMIZI_QUIZ_HEADER.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = marker.exec(full)) !== null) {
+  while ((m = KENDIMIZI_QUIZ_HEADER.exec(full)) !== null) {
     const afterHeader = full.slice(m.index + m[0].length)
     if (!looksLikeRealQuizAfterHeader(afterHeader)) continue
 
     const unitTitle = findUnitTitleBefore(full, m.index)
     const restFromHeader = full.slice(m.index + m[0].length)
-    const localStart = restFromHeader.search(/\n\s*1\.\s+(?!Ünite\b)/i)
-    if (localStart === -1) continue
-    const globalStart = m.index + m[0].length + localStart + 1
+    const q1 = /(?:^|\n)\s*(1\.\s+(?!Ünite\b))/i.exec(restFromHeader)
+    if (!q1 || q1.index === undefined) continue
+    const globalStart =
+      m.index + m[0].length + q1.index + (q1[0].length - q1[1].length)
 
     const tail = full.slice(globalStart)
     const endMatch = tail.match(
-      /\n\s*(?:Okuma\s+Parçası|Kendimizi\s+Sınayalım\s+Yanıt\s+Anahtarı)(?=\s|$)/i,
+      new RegExp(
+        String.raw`\n\s*(?:Okuma\s+Parçası|Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı)(?=\s|$)`,
+        'i',
+      ),
     )
     const end = endMatch ? endMatch.index : Math.min(tail.length, 120_000)
     const rawBase = tail.slice(0, end)
@@ -281,7 +318,11 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
 
     const stem = stripInlinePageTags(stemRaw)
     if (stem && options.length >= 2) {
-      const q: QuizQuestion = { number: qNum, stem, options }
+      const q: QuizQuestion = {
+        number: qNum,
+        stem,
+        options: normalizeMangledMcqOptions(options),
+      }
       if (srcPage !== undefined) q.sourcePage = srcPage
       questions.push(q)
     }
@@ -295,7 +336,9 @@ function parseAnswerChunk(chunk: string): Map<number, string> {
   const re = /(?:^|\n)\s*(\d+)\.\s*([a-e])\b/gi
   let x: RegExpExecArray | null
   while ((x = re.exec(chunk)) !== null) {
-    map.set(Number(x[1]), x[2].toLowerCase())
+    const n = Number(x[1])
+    /** Aynı chunk’ta birden fazla «1. x» olursa (bitiş sınırı kaçtıysa) ilk kitap cevabı geçerli */
+    if (!map.has(n)) map.set(n, x[2].toLowerCase())
   }
   return map
 }
@@ -311,6 +354,7 @@ function parseAnswerHints(chunk: string): Map<number, string> {
   let m: RegExpExecArray | null
   while ((m = re.exec(oneLine)) !== null) {
     const n = Number(m[1])
+    if (hints.has(n)) continue
     const after = oneLine.slice(m.index + m[0].length)
     const q = after.match(/"([^"]{2,240})"/)
     if (q) hints.set(n, q[1].replace(/\s+/g, ' ').trim())
@@ -324,7 +368,8 @@ function parseAnswerChunkLoose(chunk: string): Map<number, string> {
   const re = /(?:^|\n)\s*(\d+)\.\s*([A-Ea-e])(?:\s|$)/gm
   let x: RegExpExecArray | null
   while ((x = re.exec(chunk)) !== null) {
-    map.set(Number(x[1]), x[2].toLowerCase())
+    const n = Number(x[1])
+    if (!map.has(n)) map.set(n, x[2].toLowerCase())
   }
   return map
 }
@@ -334,22 +379,55 @@ type AnswerBundle = {
   hints: Map<number, string>
 }
 
+/**
+ * Yanıt listesinden sonraki bölümlere kadar kes; PDF satır sonları `$` ile tutarsız olabildiğinden
+ * başlık satırlarında `search` kullanıyoruz (chunk şişmeden önce durur).
+ */
+function findKendimiziYanıtChunkEnd(tail: string): number {
+  /**
+   * Sayfa üstündeki «\n1. Ünite - …» yanıt listesinden önce gelirse chunk’u başta kesip
+   * cevap satırları parse edilemiyordu (answerSize: 0). Sadece ilk «n. harf» cevabından
+   * *sonra* gelen Ünite satırını son sınır say.
+   */
+  const firstAnswerIdx = tail.search(/(?:^|\n)\s*\d+\.\s*[a-e]\b/i)
+  let unitIdx = -1
+  if (firstAnswerIdx >= 0) {
+    const rel = tail.slice(firstAnswerIdx).search(/\n\s*\d+\.\s*Ünite\b/i)
+    if (rel >= 0) unitIdx = firstAnswerIdx + rel
+  } else {
+    unitIdx = tail.search(/\n\s*\d+\.\s*Ünite\b/i)
+  }
+
+  const markers = [
+    tail.search(/\n\s*Sıra\s+Sizde\s+Yanıt\s+Anahtarı/i),
+    tail.search(/\n\s*Yararlanılan\s+ve\s+Başvurulabilecek\s+Kaynaklar/i),
+    /** Sonraki ünite testi: «… Sınayalım» ama «Yanıt Anahtarı» değil */
+    tail.search(/\n\s*Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım(?!\s+Yanıt)/i),
+    unitIdx >= 0 ? unitIdx : -1,
+  ]
+  /** 0: boş kesim; negatif: bulunamadı */
+  const found = markers.filter((i) => i > 0)
+  if (found.length > 0) return Math.min(...found)
+  return Math.min(tail.length, 80_000)
+}
+
 /** «Kendimizi Sınayalım Yanıt Anahtarı» blokları */
 function sliceKendimiziAnswerMaps(full: string): AnswerBundle[] {
   const maps: AnswerBundle[] = []
-  const marker = /Kendimizi\s+Sınayalım\s+Yanıt\s+Anahtarı/gi
   let hit: RegExpExecArray | null
-  while ((hit = marker.exec(full)) !== null) {
+  KENDIMIZI_YANIT_BASLIK.lastIndex = 0
+  while ((hit = KENDIMIZI_YANIT_BASLIK.exec(full)) !== null) {
     const tail = full.slice(hit.index + hit[0].length)
     const head = tail.slice(0, 8000)
     if (!/(?:^|\n)\s*1\.\s*[a-e]\b/i.test(head)) continue
 
-    const endM = tail.match(
-      /\n\s*(?:Sıra\s+Sizde\s+Yanıt\s+Anahtarı|Kendimizi\s+Sınayalım\s*$|Yararlanılan\s+ve\s+Başvurulabilecek\s+Kaynaklar)(?=\s|$|[.])/i,
-    )
-    const end = endM ? endM.index : Math.min(tail.length, 80_000)
+    const end = findKendimiziYanıtChunkEnd(tail)
     const chunk = tail.slice(0, end)
-    const answers = parseAnswerChunk(chunk)
+    let answers = parseAnswerChunk(chunk)
+    if (answers.size < 3) {
+      const loose = parseAnswerChunkLoose(chunk)
+      if (loose.size > answers.size) answers = loose
+    }
     if (answers.size >= 3)
       maps.push({ answers, hints: parseAnswerHints(chunk) })
   }
@@ -389,7 +467,7 @@ export function buildQuizzesFromPdfText(fullText: string): QuizSection[] {
     ? sliceLooseYanıtAnswerMaps(fullText)
     : sliceKendimiziAnswerMaps(fullText)
 
-  return bodies.map((b, idx) => {
+  const sections = bodies.map((b, idx) => {
     const questions = parseMcqBlock(b.body)
     const bundle = answerMaps[idx]
     if (bundle) {
@@ -407,4 +485,6 @@ export function buildQuizzesFromPdfText(fullText: string): QuizSection[] {
       questions,
     }
   })
+
+  return sections
 }

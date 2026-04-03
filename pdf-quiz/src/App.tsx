@@ -1,9 +1,15 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   buildQuizzesFromPdfText,
   questionNeedsPageFigure,
 } from './lib/parseKendimizi'
 import { loadPdfQuizBundle } from './lib/pdfQuizBundle'
+import {
+  docFingerprint,
+  loadSolvedQuestionIds,
+  persistSolvedQuestionIds,
+  questionProgressId,
+} from './lib/quizProgress'
 import type { QuizQuestion, QuizSection } from './lib/parseKendimizi'
 
 type Phase = 'upload' | 'pick' | 'quiz' | 'done'
@@ -20,12 +26,23 @@ export default function App() {
   const [qIndex, setQIndex] = useState(0)
   const [picked, setPicked] = useState<string | null>(null)
   const [revealed, setRevealed] = useState(false)
+  /** PDF dosya adı + bayt boyutu; localStorage anahtarı */
+  const [docFp, setDocFp] = useState<string | null>(null)
+  const [solvedIds, setSolvedIds] = useState<Set<string>>(() => new Set())
 
   const activeSection = useMemo(
     () => sections.find((s) => s.id === activeSectionId) ?? null,
     [sections, activeSectionId],
   )
   const question: QuizQuestion | null = activeSection?.questions[qIndex] ?? null
+
+  useEffect(() => {
+    if (!docFp) {
+      setSolvedIds(new Set())
+      return
+    }
+    setSolvedIds(loadSolvedQuestionIds(docFp))
+  }, [docFp])
 
   const pageFigureSrc = useMemo(() => {
     if (!question?.sourcePage) return null
@@ -52,6 +69,7 @@ export default function App() {
         )
         setSections([])
         setPageSnapshots({})
+        setDocFp(null)
         setPhase('upload')
         return
       }
@@ -72,11 +90,13 @@ export default function App() {
           : {}
       setPageSnapshots(snaps)
       setSections(pruned)
+      setDocFp(docFingerprint(file.name, file.size))
       setPhase('pick')
     } catch {
       setError('PDF okunamadı. Dosya bozuk olabilir veya taranmış (foto) bir PDF olabilir.')
       setSections([])
       setPageSnapshots({})
+      setDocFp(null)
       setPhase('upload')
     } finally {
       setBusy(false)
@@ -89,6 +109,14 @@ export default function App() {
     setPicked(null)
     setRevealed(false)
     setPhase('quiz')
+  }
+
+  const backToUnits = () => {
+    setPhase('pick')
+    setActiveSectionId(null)
+    setQIndex(0)
+    setPicked(null)
+    setRevealed(false)
   }
 
   const next = () => {
@@ -113,10 +141,23 @@ export default function App() {
     if (revealed) return
     setPicked(key)
     setRevealed(true)
+    if (!docFp || !activeSection || !question) return
+    const id = questionProgressId(activeSection.id, question.number)
+    setSolvedIds((prev) => {
+      if (prev.has(id)) return prev
+      const next = new Set(prev).add(id)
+      persistSolvedQuestionIds(docFp, next)
+      return next
+    })
   }
 
   const withKeyCount = (s: QuizSection) =>
     s.questions.filter((q) => q.correctKey).length
+
+  const solvedCountInSection = (s: QuizSection) =>
+    s.questions.filter((q) =>
+      solvedIds.has(questionProgressId(s.id, q.number)),
+    ).length
 
   return (
     <div className="app">
@@ -161,6 +202,9 @@ export default function App() {
       {fileName && phase !== 'upload' && (
         <p className="file-tag">
           <span className="file-name">{fileName}</span>
+          <span className="file-tag-hint muted">
+            Çözülen sorular bu cihazda saklanır (aynı dosya adı ve boyutu).
+          </span>
           <button
             type="button"
             className="linkish"
@@ -169,6 +213,7 @@ export default function App() {
               setSections([])
               setPageSnapshots({})
               setFileName(null)
+              setDocFp(null)
               setError(null)
               setActiveSectionId(null)
             }}
@@ -198,6 +243,9 @@ export default function App() {
                     {withKeyCount(s) > 0
                       ? ` · ${withKeyCount(s)} için cevap anahtarı`
                       : ''}
+                    {docFp && solvedCountInSection(s) > 0
+                      ? ` · ${solvedCountInSection(s)}/${s.questions.length} çözüldü`
+                      : ''}
                   </span>
                 </button>
               </li>
@@ -209,7 +257,12 @@ export default function App() {
       {phase === 'quiz' && activeSection && question && (
         <section className="quiz">
           <div className="quiz-top">
-            <span className="badge">{activeSection.unitTitle}</span>
+            <div className="quiz-top-left">
+              <button type="button" className="secondary quiz-back" onClick={backToUnits}>
+                ← Üniteler
+              </button>
+              <span className="badge">{activeSection.unitTitle}</span>
+            </div>
             <div className="quiz-top-right">
               {qIndex > 0 && (
                 <button type="button" className="secondary" onClick={prev}>
@@ -218,6 +271,9 @@ export default function App() {
               )}
               <span className="progress">
                 Soru {qIndex + 1} / {activeSection.questions.length}
+                {docFp && solvedCountInSection(activeSection) > 0
+                  ? ` · ${solvedCountInSection(activeSection)} kayıtlı`
+                  : ''}
               </span>
             </div>
           </div>
@@ -245,6 +301,13 @@ export default function App() {
             )}
 
           <h2 className="stem">{question.stem}</h2>
+          {docFp &&
+            solvedIds.has(questionProgressId(activeSection.id, question.number)) &&
+            !revealed && (
+              <p className="revisit-hint muted">
+                Bu soruyu daha önce çözdün; tekrar denemek için bir şık seçebilirsin.
+              </p>
+            )}
 
           <ul className="options">
             {question.options.map((o) => {
@@ -322,6 +385,13 @@ export default function App() {
           <h2>Tamamlandı</h2>
           <p className="muted">
             Bu ünitedeki {activeSection.questions.length} soruyu bitirdin.
+            {docFp && (
+              <>
+                {' '}
+                Bu PDF için bu üniteden toplam{' '}
+                {solvedCountInSection(activeSection)} soru cevabın kayıtlı.
+              </>
+            )}
           </p>
           <div className="row">
             <button type="button" className="primary" onClick={() => setPhase('pick')}>
