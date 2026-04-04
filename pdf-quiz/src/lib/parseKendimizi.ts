@@ -273,17 +273,28 @@ export function normalizeQuestionBlockLayout(s: string): string {
 /**
  * PDF sayfa altlığı: «<<PAGE>> … N. Ünite … Kendimizi Sınayalım Yanıt Anahtarı» gövde ortasında
  * çıkabiliyor; gerçek yanıt başlığı değil, MCQ 9–10 bundan sonra geliyor (9. ünite).
+ * Gerçek anahtar sayfasında da üstte «N. Ünite» + sayfa etiketi olur; hemen ardından
+ * «1. a.(\\n)Yanıtınız» geliyorsa bu koşu gerçek kesittir (T. İşaret Dili 7. ünite).
  */
 function isRunningÜnitePageFooterBeforeYanıt(tail: string, yIdx: number): boolean {
   const back = tail.slice(Math.max(0, yIdx - 900), yIdx)
-  return /<<PAGE:\d+>>/.test(back) && /\n\s*\d+\.\s*Ünite\b/i.test(back)
+  const looksLikeRunningHeaderBand =
+    /<<PAGE:\d+>>/.test(back) && /\n\s*\d+\.\s*Ünite\b/i.test(back)
+  if (!looksLikeRunningHeaderBand) return false
+  const len = yanıtHeaderMatchLenAt(tail, yIdx)
+  const after = len > 0 ? tail.slice(yIdx + len, yIdx + len + 3500) : ''
+  if (/\n\s*1\.\s+[a-e]\b(?:\.?\s*\n\s*Yanıtınız|\s+Yanıtınız)/i.test(after)) return false
+  return true
 }
 
-/** Basılı yanıt listesi: «1. a» + «Yanıtınız» (soru gövdesinde yok). */
-const PRINTED_ANSWER_FIRST_LINE = /\n\s*1\.\s+[a-e]\b\s+Yanıtınız/gi
+/**
+ * Basılı yanıt listesi: «1. a Yanıtınız» aynı satırda veya «1. a.» ile «Yanıtınız» satır kırılımıyla
+ * (PDF.js; soru gövdesinde yok).
+ */
+const PRINTED_ANSWER_FIRST_LINE = /\n\s*1\.\s+[a-e]\b(?:\.?\s*\n\s*Yanıtınız|\s+Yanıtınız)/gi
 
 function findPrintedAnswerKeyStart(tail: string): number {
-  const m = tail.match(/\n\s*1\.\s+[a-e]\b\s+Yanıtınız/i)
+  const m = tail.match(/\n\s*1\.\s+[a-e]\b(?:\.?\s*\n\s*Yanıtınız|\s+Yanıtınız)/i)
   return m?.index !== undefined ? m.index : -1
 }
 
@@ -375,8 +386,8 @@ function isMidQuizSpuriousYanıtHeader(sub: string, yIdx: number): boolean {
   const len = yanıtHeaderMatchLenAt(sub, yIdx)
   if (len < 1) return false
   const after = sub.slice(yIdx + len, yIdx + len + 14_000)
-  /** «1. aşağıda…» soru köküne düşmesin; basılı anahtar `findPrintedAnswerKeyStart` ile aynı sıkılıkta */
-  const keyMatch = after.match(/\n\s*1\.\s+[a-e]\b\s+Yanıtınız/i)
+  /** «1. aşağıda…» soru köküne düşmesin; basılı anahtar `findPrintedAnswerKeyStart` ile aynı kalıp */
+  const keyMatch = after.match(/\n\s*1\.\s+[a-e]\b(?:\.?\s*\n\s*Yanıtınız|\s+Yanıtınız)/i)
   const key1 = keyMatch?.index ?? -1
   const q9 = after.search(/\n\s*9\.\s+(?!Ünite\b)/i)
   const q10 = after.search(/\n\s*10\.\s+(?!Ünite\b)/i)
@@ -569,9 +580,10 @@ function parseAnswerChunk(chunk: string): Map<number, string> {
   const map = new Map<number, string>()
   /**
    * Küçük harf şık + `g` (türkçe «10. Aşağıdaki…» i/. için «10. A» sahte cevap olmasın).
+   * «2. a» ile «2.a» / «5.e» gibi boşluksuz biçim (PDF.js, T. İşaret Dili).
    * Gövde metni chunk’ta kalınca aynı numaranın gerçek satırı «… Yanıtınız» ile gelir — onu yeğle.
    */
-  const re = /(?:^|\n)\s*(\d+)\.\s+([a-e])\b/g
+  const re = /(?:^|\n)\s*(\d+)\.\s*([a-e])\b/g
   let x: RegExpExecArray | null
   while ((x = re.exec(chunk)) !== null) {
     const n = Number(x[1])

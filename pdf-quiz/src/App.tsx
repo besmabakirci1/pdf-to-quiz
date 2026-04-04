@@ -191,6 +191,12 @@ export default function App() {
           gibi görsel gerektiren sorularda ilgili PDF sayfasını yüksek çözünürlükte
           gösterir. Mümkünse yanıt anahtarını eşleştirir. Her şey tarayıcıda kalır.
         </p>
+        {import.meta.env.VITE_APP_GIT_SHA ? (
+          <p className="muted build-stamp">
+            Yayın derlemesi:{' '}
+            <code>{String(import.meta.env.VITE_APP_GIT_SHA).slice(0, 7)}</code>
+          </p>
+        ) : null}
       </header>
 
       {phase === 'upload' && (

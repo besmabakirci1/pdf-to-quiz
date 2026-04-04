@@ -83,6 +83,15 @@ body {
   font-weight: 600;
 }
 
+.hero .build-stamp {
+  margin: 0.65rem 0 0;
+  font-size: 0.82rem;
+}
+
+.hero .build-stamp code {
+  font-size: 0.9em;
+}
+
 .dropzone {
   position: relative;
   display: block;

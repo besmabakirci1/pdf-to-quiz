@@ -31,6 +31,7 @@ jobs:
         env:
           # Proje sitesi: https://<kullanıcı>.github.io/<repo-adı>/
           VITE_BASE_URL: /${{ github.event.repository.name }}/
+          VITE_APP_GIT_SHA: ${{ github.sha }}
         run: |
           node -v
           test -f package-lock.json || (echo 'package-lock.json eksik' && exit 1)
