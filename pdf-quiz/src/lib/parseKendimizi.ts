@@ -81,6 +81,29 @@ function peekStartsWithNumberedQuestionHead(peek: string): boolean {
   return m !== null && isLikelyMcqQuestionStemAfterNumber(m[1])
 }
 
+/**
+ * Şıklar bittikten sonra gelen açıklama/okuma parçası bazen «e. … vermesi» ile «4. Yukarıda…» arasına
+ * sıkışır; PDF’te yeni satır büyük harfle başlayan cümle şık devamından çok prose’dur (şık sarma genelde
+ * küçük harf veya satır sonu tire ile sürer).
+ */
+function shouldStopOptionBeforeProseParagraph(prevOptText: string, contLine: string): boolean {
+  const t = contLine.trim()
+  const p = prevOptText.replace(/\s+/g, ' ').trim()
+  if (t.length < 22 || p.length < 8) return false
+  if (/[-\u2013\u2014]\s*$/u.test(p)) return false
+  /** «Âşık…» gibi A^ ile başlayan satırlar [A-ZÇĞİÖŞÜ] listesine girmezdi */
+  if (!/^\p{Lu}/u.test(t)) return false
+  if (/^\p{Ll}/u.test(t)) return false
+  /**
+   * «Divançe, Hadikatü…» gibi virgüllü tek satırda boşluğa göre az kelime kalabiliyor;
+   * yeterli uzunluksa yine araya giren okuma parçasıdır. Kısa satırda ise «İstanbul’da …» şık devamı.
+   */
+  const wc = t.split(/\s+/).filter(Boolean).length
+  if (wc < 4 || (wc < 5 && t.length < 36)) return false
+  const prevEndsLikeCompleteWord = /[a-züğıöüşçı)]$/iu.test(p)
+  return prevEndsLikeCompleteWord
+}
+
 /** Kiril С (U+0421) PDF’te Latin «c.» diye çıkabiliyor; «b. c.» satırı c etiketini yutup şıkları d/e diye kaydırıyor */
 const CYRILLIC_CAPITAL_ES = '\u0421'
 
@@ -201,7 +224,7 @@ function sliceBlocksBeforeYanıtAnahtarı(
 function looksLikeRealQuizAfterHeader(rest: string): boolean {
   const head = rest.slice(0, 8000)
   /** Bazı sayfalarda «Sınayalım 1. Soru» aynı satırda; satır başı zorunlu değil */
-  return /(?:^|\n)\s*1\.\s+(?!Ünite\b)[\s\S]{0,1200}?(?:\n\s*[a-e][\.\)]\s*|\n\s*[a-e]\s*\t)/i.test(
+  return /(?:^|\n)\s*1\.\s+(?!Ünite\b)[\s\S]{0,1200}?(?:\n\s*[a-e][.)]\s*|\n\s*[a-e]\s*\t)/i.test(
     head,
   )
 }
@@ -239,7 +262,7 @@ export function normalizeQuestionBlockLayout(s: string): string {
   t = `\n${t}`
   t = t.replace(/\n\s*(\d+)\.\s*\n+/g, '\n$1. ')
   t = t.replace(/\n\s*([a-e])\.\s*\n+/gi, '\n$1. ')
-  t = t.replace(/\n\s*([A-E])[\.\)]\s*/g, (_m, L) => `\n${String(L).toLowerCase()}. `)
+  t = t.replace(/\n\s*([A-E])[.)]\s*/g, (_m, L) => `\n${String(L).toLowerCase()}. `)
   t = t.replace(
     /\n\s*([a-e])\s*\n+([A-ZÇĞİÖŞÜa-züğıöüşç])/g,
     (_m, letter, next) => `\n${letter}. ${next}`,
@@ -257,9 +280,70 @@ function isRunningÜnitePageFooterBeforeYanıt(tail: string, yIdx: number): bool
 }
 
 /** Basılı yanıt listesi: «1. a» + «Yanıtınız» (soru gövdesinde yok). */
+const PRINTED_ANSWER_FIRST_LINE = /\n\s*1\.\s+[a-e]\b\s+Yanıtınız/gi
+
 function findPrintedAnswerKeyStart(tail: string): number {
-  const m = tail.match(/\n\s*1\.\s+[a-e]\b\s*\n\s*Yanıtınız/i)
+  const m = tail.match(/\n\s*1\.\s+[a-e]\b\s+Yanıtınız/i)
   return m?.index !== undefined ? m.index : -1
+}
+
+/** Tezkire: metin akışında 4. ünite anahtarı (17. yy. ipuçları) 3. ünite başlığından hemen sonra yanlışlıkla geliyor. */
+function hintsLookLikeMisplacedUnit4AfterUnit3(hints: Map<number, string>): boolean {
+  const h1 = hints.get(1) ?? ''
+  const h2 = hints.get(2) ?? ''
+  return /17\.\s*Yüzyıl\s+Şair/i.test(h1) && /17\.\s*Yüzyıl\s+Şair/i.test(h2)
+}
+
+function lastPrintedKeyOffsetBefore(full: string, cutExclusive: number, maxBack: number): number {
+  const lo = Math.max(0, cutExclusive - maxBack)
+  const region = full.slice(lo, cutExclusive)
+  PRINTED_ANSWER_FIRST_LINE.lastIndex = 0
+  let last = -1
+  let m: RegExpExecArray | null
+  while ((m = PRINTED_ANSWER_FIRST_LINE.exec(region)) !== null) last = lo + m.index
+  return last
+}
+
+function tryKendimiziAnswerWorkFromBackward(
+  full: string,
+  /**
+   * «Kendimizi Sınayalım Yanıt Anahtarı» eşleşmesinin başlangıcı; gerçek «1. x Yanıtınız» listesi
+   * bazen PDF sırasında bu ifadeden önce geliyor (Tezkire 3. ve 7. ünite).
+   */
+  headerMatchStart: number,
+  sourceUnit: number | undefined,
+): string | undefined {
+  const start = lastPrintedKeyOffsetBefore(full, headerMatchStart, 92_000)
+  if (start < 0) return undefined
+  const work = full.slice(start)
+  const end = findKendimiziYanıtChunkEnd(work)
+  const chunk = work.slice(0, end)
+  const answers = parseAnswerChunk(chunk)
+  if (answers.size < 3) return undefined
+  const hints = parseAnswerHints(chunk)
+  if (sourceUnit === 3 && hintsLookLikeMisplacedUnit4AfterUnit3(hints)) return undefined
+  return work
+}
+
+function tryKendimiziAnswerWorkFromForwardTail(
+  tail: string,
+  sourceUnit: number | undefined,
+  scanCap = 160_000,
+): string | undefined {
+  const prefix = tail.slice(0, Math.min(tail.length, scanCap))
+  PRINTED_ANSWER_FIRST_LINE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = PRINTED_ANSWER_FIRST_LINE.exec(prefix)) !== null) {
+    const work = tail.slice(m.index)
+    const end = findKendimiziYanıtChunkEnd(work)
+    const chunk = work.slice(0, end)
+    const answers = parseAnswerChunk(chunk)
+    if (answers.size < 3) continue
+    const hints = parseAnswerHints(chunk)
+    if (sourceUnit === 3 && hintsLookLikeMisplacedUnit4AfterUnit3(hints)) continue
+    return work
+  }
+  return undefined
 }
 
 function endRespectingEarlyOkumaParçası(
@@ -273,26 +357,70 @@ function endRespectingEarlyOkumaParçası(
   return oIdx
 }
 
+const KENDIMIZI_YANIT_LINE_AT_END =
+  /\n\s*Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı(?=\s|$)/i
+
+/** Sütun sırası: «Yanıt Anahtarı» 8. sorudan sonra, 9–10 ve gerçek «1. b» listesinden önce geliyor (Tezkire 2. ünite). */
+function yanıtHeaderMatchLenAt(sub: string, yIdx: number): number {
+  const m = sub
+    .slice(yIdx)
+    .match(
+      /* `\b` Türkçe «…Anahtarı» sonunda `r|ı` arasında yanlış kesiyordu */
+      /^\n\s*Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı(?=\s|$)/i,
+    )
+  return m?.[0].length ?? 0
+}
+
+function isMidQuizSpuriousYanıtHeader(sub: string, yIdx: number): boolean {
+  const len = yanıtHeaderMatchLenAt(sub, yIdx)
+  if (len < 1) return false
+  const after = sub.slice(yIdx + len, yIdx + len + 14_000)
+  /** «1. aşağıda…» soru köküne düşmesin; basılı anahtar `findPrintedAnswerKeyStart` ile aynı sıkılıkta */
+  const keyMatch = after.match(/\n\s*1\.\s+[a-e]\b\s+Yanıtınız/i)
+  const key1 = keyMatch?.index ?? -1
+  const q9 = after.search(/\n\s*9\.\s+(?!Ünite\b)/i)
+  const q10 = after.search(/\n\s*10\.\s+(?!Ünite\b)/i)
+  const qFirst =
+    q9 >= 0 && q10 >= 0
+      ? Math.min(q9, q10)
+      : q9 >= 0
+        ? q9
+        : q10 >= 0
+          ? q10
+          : -1
+  if (qFirst < 0) return false
+  if (key1 < 0) return true
+  return qFirst < key1
+}
+
+/**
+ * İlk «Yanıt Anahtarı» kesiti: footer gürültüsü veya gövde ortası sahte başlık (Tezkire 2. ünite:
+ * 8–10’dan önce yanlış sırada gelen başlık) ise -1 → kesim `findPrintedAnswerKeyStart` ile yapılır.
+ */
+function findFirstUsableKendimiziYanıtCut(sub: string): number {
+  const rel = sub.search(KENDIMIZI_YANIT_LINE_AT_END)
+  if (rel < 0) return -1
+  if (isRunningÜnitePageFooterBeforeYanıt(sub, rel)) return -1
+  if (isMidQuizSpuriousYanıtHeader(sub, rel)) return -1
+  return rel
+}
+
 /**
  * «Kendimizi Sınayalım» gövdesinin bittiği konum (tail içi offset).
  * Sayfa sınırında geçen «Okuma Parçası» bazen 8. sorudan sonra gelip 9–10’u kesiyordu;
  * bu durumda yalnızca «Yanıt Anahtarı» sınırı kullanılır.
  */
 function findKendimiziQuizBlockEnd(tail: string): number {
-  const yRe =
-    /\n\s*Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı(?=\s|$)/i
   const oRe = /\n\s*Okuma\s+Parçası(?=\s|$)/i
   const cap = Math.min(tail.length, 120_000)
   const sub = tail.slice(0, cap)
 
-  const y0 = sub.search(yRe)
+  const y0 = findFirstUsableKendimiziYanıtCut(sub)
   const oIdx = sub.search(oRe)
   const akIdx = findPrintedAnswerKeyStart(sub)
-  const firstYanıtIsFooterNoise =
-    y0 >= 0 && isRunningÜnitePageFooterBeforeYanıt(sub, y0)
 
   let result: number
-  if (y0 < 0 || firstYanıtIsFooterNoise) {
+  if (y0 < 0) {
     let end = akIdx >= 0 ? akIdx : cap
     end = endRespectingEarlyOkumaParçası(sub, end, oIdx)
     result = end
@@ -350,7 +478,7 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
     pos += leadingWs
     const qStart = pos
     const rest = text.slice(pos)
-    let qm = rest.match(/^(\d+)\.\s+([\s\S]*?)(?=\n\s*[a-e](?:\.|\)))/i)
+    const qm = rest.match(/^(\d+)\.\s+([\s\S]*?)(?=\n\s*[a-e](?:\.|\)))/i)
     if (!qm) {
       const rel = rest.search(/\n\s*\d+\.\s+(?!Ünite\b)/i)
       if (rel === -1) break
@@ -392,6 +520,9 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
         const cont = peek.match(/^\n+(?:\s*\n)*\s*(\S[^\n]*)/i)
         if (!cont) break
         const contLine = cont[1].trim()
+        if (shouldStopOptionBeforeProseParagraph(optText, contLine)) break
+        /** Blok alıntı sonraki sorunun («Yukarıdaki ifade…») girişi; şık e metnine yapışıyordu (Tezkire kitabı). */
+        if (/^["“„«]/u.test(contLine)) break
         if (/^\s*[a-e](?:\.|\))\s*$/i.test(contLine)) break
         if (isNextOptionLine(`\n${contLine}`)) break
         if (
@@ -436,12 +567,19 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
 
 function parseAnswerChunk(chunk: string): Map<number, string> {
   const map = new Map<number, string>()
-  const re = /(?:^|\n)\s*(\d+)\.\s*([a-e])\b/gi
+  /**
+   * Küçük harf şık + `g` (türkçe «10. Aşağıdaki…» i/. için «10. A» sahte cevap olmasın).
+   * Gövde metni chunk’ta kalınca aynı numaranın gerçek satırı «… Yanıtınız» ile gelir — onu yeğle.
+   */
+  const re = /(?:^|\n)\s*(\d+)\.\s+([a-e])\b/g
   let x: RegExpExecArray | null
   while ((x = re.exec(chunk)) !== null) {
     const n = Number(x[1])
-    /** Aynı chunk’ta birden fazla «1. x» olursa (bitiş sınırı kaçtıysa) ilk kitap cevabı geçerli */
-    if (!map.has(n)) map.set(n, x[2].toLowerCase())
+    const letter = x[2]
+    const after = chunk.slice(x.index + x[0].length, x.index + x[0].length + 130)
+    const isPrintedKeyLine = /^\s*Yanıtınız/i.test(after)
+    if (!map.has(n)) map.set(n, letter)
+    else if (isPrintedKeyLine) map.set(n, letter)
   }
   return map
 }
@@ -453,7 +591,7 @@ function parseAnswerHints(chunk: string): Map<number, string> {
     .replace(/-\s*\n\s*/g, '')
     .replace(/[\u201c\u201d\u00ab\u00bb]/g, '"')
     .replace(/\s+/g, ' ')
-  const re = /(\d+)\.\s*([a-e])\b/gi
+  const re = /(\d+)\.\s*([a-e])\b/g
   let m: RegExpExecArray | null
   while ((m = re.exec(oneLine)) !== null) {
     const n = Number(m[1])
@@ -662,13 +800,10 @@ function sliceKendimiziAnswerMapsTagged(full: string): TaggedAnswerBundle[] {
   let hit: RegExpExecArray | null
   KENDIMIZI_YANIT_BASLIK.lastIndex = 0
   while ((hit = KENDIMIZI_YANIT_BASLIK.exec(full)) !== null) {
-    const tail = full.slice(hit.index + hit[0].length)
-    const head = tail.slice(0, 8000)
-    if (!/(?:^|\n)\s*1\.\s*[a-e]\b/i.test(head)) continue
-
     const headerEnd = hit.index + hit[0].length
     const sourceUnit = sourceUnitNoBeforeYanıtHeader(full, headerEnd)
 
+    const tail = full.slice(headerEnd)
     let work = tail
     const sıraSizdeIdx = tail.search(/\n\s*Sıra\s+Sizde\s+Yanıt\s+Anahtarı/i)
     const firstAnsIdx = tail.search(/(?:^|\n)\s*\d+\.\s*[a-e]\b/i)
@@ -678,6 +813,15 @@ function sliceKendimiziAnswerMapsTagged(full: string): TaggedAnswerBundle[] {
         .slice(sıraSizdeIdx)
         .replace(/^\s*Sıra\s+Sizde\s+Yanıt\s+Anahtarı\s*\n*/i, '')
     }
+
+    const head8 = work.slice(0, 8000)
+    if (!/(?:^|\n)\s*1\.\s*[a-e]\b/i.test(head8)) {
+      const back = tryKendimiziAnswerWorkFromBackward(full, hit.index, sourceUnit)
+      const fwd = back ?? tryKendimiziAnswerWorkFromForwardTail(work, sourceUnit)
+      if (!fwd) continue
+      work = fwd
+    }
+
     if (!/(?:^|\n)\s*1\.\s*[a-e]\b/i.test(work.slice(0, 8000))) continue
 
     const end = findKendimiziYanıtChunkEnd(work)
