@@ -103,6 +103,27 @@ export default function App() {
     }
   }, [])
 
+  const onDropzoneDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const onDropzoneDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.types.includes('Files')) e.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const onDropzoneDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const file = e.dataTransfer.files?.[0] ?? null
+      void onFile(file)
+    },
+    [onFile],
+  )
+
   const startQuiz = (id: string) => {
     setActiveSectionId(id)
     setQIndex(0)
@@ -173,7 +194,12 @@ export default function App() {
       </header>
 
       {phase === 'upload' && (
-        <label className="dropzone">
+        <label
+          className="dropzone"
+          onDragEnter={onDropzoneDragEnter}
+          onDragOver={onDropzoneDragOver}
+          onDrop={onDropzoneDrop}
+        >
           <input
             type="file"
             accept="application/pdf"
