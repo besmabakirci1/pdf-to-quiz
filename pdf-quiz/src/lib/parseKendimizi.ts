@@ -561,6 +561,41 @@ function assignAnswerBundlesByUnit(
 }
 
 /**
+ * Sayfa üstü «N. Ünite - … | 104» koşan başlığı; yanıt anahtarı 7→8 arasında gelince chunk erken kesiliyordu.
+ */
+function isRunningPageÜniteLine(line: string): boolean {
+  const t = line.trim()
+  return /\|/.test(t) && /\d/.test(t.slice(t.indexOf('|')))
+}
+
+/** Bu «Ünite» satırından hemen sonra 8–10 cevap satırları geliyorsa yanlış pozitif sınırdır. */
+function yanıtAnahtarıContinues8910After(tail: string, unitLineStart: number): boolean {
+  const win = tail.slice(unitLineStart, unitLineStart + 4000)
+  const sıra = win.search(/\n\s*Sıra\s+Sizde\s+Yanıt\s+Anahtarı/i)
+  const ans = win.search(/\n\s*(?:8|9|10)\.\s*[a-e]\b/i)
+  if (ans < 0) return false
+  return sıra < 0 || ans < sıra
+}
+
+/**
+ * İlk cevap satırından sonra gerçek «bölüm sonu» ünite başlığını bul; koşan sayfa başlığını atla.
+ */
+function findUnitHeadingChunkEndAfterAnswers(tail: string, firstAnswerIdx: number): number {
+  const re = /\n\s*\d+\.\s*Ünite\b/g
+  re.lastIndex = Math.max(0, firstAnswerIdx)
+  let m: RegExpExecArray | null
+  while ((m = re.exec(tail)) !== null) {
+    const idx = m.index
+    const lineEnd = tail.indexOf('\n', idx + 1)
+    const line = lineEnd < 0 ? tail.slice(idx) : tail.slice(idx, lineEnd)
+    if (isRunningPageÜniteLine(line)) continue
+    if (yanıtAnahtarıContinues8910After(tail, idx)) continue
+    return idx
+  }
+  return -1
+}
+
+/**
  * Yanıt listesinden sonraki bölümlere kadar kes; PDF satır sonları `$` ile tutarsız olabildiğinden
  * başlık satırlarında `search` kullanıyoruz (chunk şişmeden önce durur).
  */
@@ -573,8 +608,7 @@ function findKendimiziYanıtChunkEnd(tail: string): number {
   const firstAnswerIdx = tail.search(/(?:^|\n)\s*\d+\.\s*[a-e]\b/i)
   let unitIdx = -1
   if (firstAnswerIdx >= 0) {
-    const rel = tail.slice(firstAnswerIdx).search(/\n\s*\d+\.\s*Ünite\b/i)
-    if (rel >= 0) unitIdx = firstAnswerIdx + rel
+    unitIdx = findUnitHeadingChunkEndAfterAnswers(tail, firstAnswerIdx)
   } else {
     unitIdx = tail.search(/\n\s*\d+\.\s*Ünite\b/i)
   }
