@@ -28,8 +28,9 @@ Az önce bu ortamda npm install ve npm run dev çalıştı; sunucu http://localh
 1. **Kodu gönder:** `git push origin main`  
    Uzak dal ile ayrıştıysan önce: `git pull --rebase origin main`, sonra push.
 
-2. **Repo ayarları:** GitHub’da repo → **Settings** → **Pages**  
-   **Build and deployment** → **Source:** **GitHub Actions** (“Deploy from a branch” değil).
+2. **Repo ayarları (zorunlu):** GitHub’da repo → **Settings** → **Pages**  
+   **Build and deployment** → **Source:** **GitHub Actions** seç.  
+   Hâlâ “Deploy from a branch” görünüyorsa veya hiç açmadıysan önce bunu **GitHub Actions** yap; aksi halde `deploy` adımı **404** verir (*Ensure GitHub Pages has been enabled*).
 
 3. **Yayın:** `main`’e her push’ta `.github/workflows/pages.yml` çalışır: `pdf-quiz` içinde `npm ci` ve `npm run build`, çıktı `dist` GitHub Pages’e gider. **Actions** sekmesinden iş akışının yeşil bittiğini kontrol et.
 
