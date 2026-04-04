@@ -356,6 +356,11 @@ function parseAnswerHints(chunk: string): Map<number, string> {
     const n = Number(m[1])
     if (hints.has(n)) continue
     const after = oneLine.slice(m.index + m[0].length)
+    /**
+     * Sınav gövdesindeki «2. a» gibi satırlar da bu kalıba girer; cevap anahtarı satırı ise
+     * hemen ardından «Yanıtınız» ile gelir (kitap tipi yanıt listeleri).
+     */
+    if (!/^\s*Yanıtınız/i.test(after)) continue
     const q = after.match(/"([^"]{2,240})"/)
     if (q) hints.set(n, q[1].replace(/\s+/g, ' ').trim())
   }
@@ -377,6 +382,79 @@ function parseAnswerChunkLoose(chunk: string): Map<number, string> {
 type AnswerBundle = {
   answers: Map<number, string>
   hints: Map<number, string>
+}
+
+/** Yanıt bloğunun hangi «N. Ünite»ye ait olduğu (eşleştirme için) */
+type TaggedAnswerBundle = {
+  bundle: AnswerBundle
+  /** `sliceQuestionBodies` sırasıyla aynı ünite numarası (1 tabanlı) */
+  sourceUnitNo?: number
+}
+
+function unitNoFromÜniteTitle(title: string): number | undefined {
+  const m = title.match(/^(\d+)\.\s*Ünite\b/i)
+  return m ? Number(m[1]) : undefined
+}
+
+/** Kendimizi yanıt başlığının hemen öncesindeki «N. Ünite» satırı (kitap düzenine göre) */
+function sourceUnitNoBeforeYanıtHeader(full: string, headerEndPos: number): number | undefined {
+  const back = full.slice(Math.max(0, headerEndPos - 20_000), headerEndPos)
+  let last: number | undefined
+  const re = /\n\s*(\d+)\.\s*Ünite\b/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(back)) !== null) last = Number(m[1])
+  return last
+}
+
+function hintMatchScoreForFirstQuestion(bundle: AnswerBundle, body: string): number {
+  const stem = parseMcqBlock(body)[0]?.stem.toLowerCase() ?? ''
+  const h1 = bundle.hints.get(1)
+  if (!stem || !h1) return 0
+  let sc = 0
+  for (const w of h1
+    .toLowerCase()
+    .replace(/[“”"]/g, ' ')
+    .split(/\s+/)
+    .filter((x) => x.length > 4)) {
+    if (stem.includes(w)) sc++
+  }
+  return sc
+}
+
+function assignAnswerBundlesByUnit(
+  bodies: { unitTitle: string; body: string }[],
+  tagged: TaggedAnswerBundle[],
+): (AnswerBundle | undefined)[] {
+  const byUnit = new Map<number, AnswerBundle>()
+  const orphans: TaggedAnswerBundle[] = []
+
+  for (const t of tagged) {
+    if (t.sourceUnitNo !== undefined && t.sourceUnitNo >= 1) {
+      if (!byUnit.has(t.sourceUnitNo)) byUnit.set(t.sourceUnitNo, t.bundle)
+      else orphans.push(t)
+    } else orphans.push(t)
+  }
+
+  for (const t of orphans) {
+    let bestU = -1
+    /** 0: yalnızca sc > 0 iken atama; eskiden 1 idi, tek kelime eşleşmesi (ör. «roman») hiçbir üniteye düşmüyordu. */
+    let bestSc = 0
+    for (let i = 0; i < bodies.length; i++) {
+      const u = i + 1
+      if (byUnit.has(u)) continue
+      const sc = hintMatchScoreForFirstQuestion(t.bundle, bodies[i].body)
+      if (sc > bestSc) {
+        bestSc = sc
+        bestU = u
+      }
+    }
+    if (bestU > 0) byUnit.set(bestU, t.bundle)
+  }
+
+  return bodies.map((body, i) => {
+    const u = unitNoFromÜniteTitle(body.unitTitle) ?? i + 1
+    return byUnit.get(u)
+  })
 }
 
 /**
@@ -411,9 +489,39 @@ function findKendimiziYanıtChunkEnd(tail: string): number {
   return Math.min(tail.length, 80_000)
 }
 
-/** «Kendimizi Sınayalım Yanıt Anahtarı» blokları */
-function sliceKendimiziAnswerMaps(full: string): AnswerBundle[] {
-  const maps: AnswerBundle[] = []
+/** «Çağdaş Türk Romanı» / sayfa / doğrudan 1.a… kolofon yanıtı (Kendimizi başlığı olmayan üniteler) */
+function sliceÇağdaşTürkRomanıColophonMaps(full: string): TaggedAnswerBundle[] {
+  /** `\b` ASCII odaklıdır; «Romanı» sonundaki «ı» sonrası sınır eşleşmez, dal hep devre dışı kalıyordu. */
+  if (!/Çağdaş\s+Türk\s+Romanı/i.test(full)) return []
+  const out: TaggedAnswerBundle[] = []
+  const re = /(?:^|\n)Çağdaş\s+Türk\s+Romanı\s*\n\s*\d+\s*\n/gi
+  let hit: RegExpExecArray | null
+  while ((hit = re.exec(full)) !== null) {
+    const start = hit.index + hit[0].length
+    const head = full.slice(start, start + 160)
+    /**
+     * Uzun «peek» içinde geçen «1. b» ile eşleşip work çöp metinle başlıyordu (cevap sayısı 0);
+     * yanıt kolofonunda sayfa numarasından hemen sonra gelen ilk anlamlı satır «n. harf» olmalı.
+     */
+    /** `m` kullanma: «^» yalnızca kolofon kesiminin başında olmalı; satır içi «1. d» eşleşmez */
+    if (!/^\s*\d+\.\s*[a-e]\b/i.test(head)) continue
+    const work = full.slice(start)
+    const end = findKendimiziYanıtChunkEnd(work)
+    const chunk = work.slice(0, end)
+    let answers = parseAnswerChunk(chunk)
+    if (answers.size < 3) {
+      const loose = parseAnswerChunkLoose(chunk)
+      if (loose.size > answers.size) answers = loose
+    }
+    if (answers.size >= 3)
+      out.push({ bundle: { answers, hints: parseAnswerHints(chunk) } })
+  }
+  return out
+}
+
+/** «Kendimizi Sınayalım Yanıt Anahtarı» blokları (+ ünite no + Sıra Sizde önek düzeltmesi) */
+function sliceKendimiziAnswerMapsTagged(full: string): TaggedAnswerBundle[] {
+  const out: TaggedAnswerBundle[] = []
   let hit: RegExpExecArray | null
   KENDIMIZI_YANIT_BASLIK.lastIndex = 0
   while ((hit = KENDIMIZI_YANIT_BASLIK.exec(full)) !== null) {
@@ -421,17 +529,34 @@ function sliceKendimiziAnswerMaps(full: string): AnswerBundle[] {
     const head = tail.slice(0, 8000)
     if (!/(?:^|\n)\s*1\.\s*[a-e]\b/i.test(head)) continue
 
-    const end = findKendimiziYanıtChunkEnd(tail)
-    const chunk = tail.slice(0, end)
+    const headerEnd = hit.index + hit[0].length
+    const sourceUnit = sourceUnitNoBeforeYanıtHeader(full, headerEnd)
+
+    let work = tail
+    const sıraSizdeIdx = tail.search(/\n\s*Sıra\s+Sizde\s+Yanıt\s+Anahtarı/i)
+    const firstAnsIdx = tail.search(/(?:^|\n)\s*\d+\.\s*[a-e]\b/i)
+    if (sıraSizdeIdx >= 0 && firstAnsIdx >= 0 && sıraSizdeIdx < firstAnsIdx) {
+      if (sourceUnit === undefined) continue
+      work = tail
+        .slice(sıraSizdeIdx)
+        .replace(/^\s*Sıra\s+Sizde\s+Yanıt\s+Anahtarı\s*\n*/i, '')
+    }
+    if (!/(?:^|\n)\s*1\.\s*[a-e]\b/i.test(work.slice(0, 8000))) continue
+
+    const end = findKendimiziYanıtChunkEnd(work)
+    const chunk = work.slice(0, end)
     let answers = parseAnswerChunk(chunk)
     if (answers.size < 3) {
       const loose = parseAnswerChunkLoose(chunk)
       if (loose.size > answers.size) answers = loose
     }
     if (answers.size >= 3)
-      maps.push({ answers, hints: parseAnswerHints(chunk) })
+      out.push({
+        bundle: { answers, hints: parseAnswerHints(chunk) },
+        sourceUnitNo: sourceUnit,
+      })
   }
-  return maps
+  return out
 }
 
 /** Dijital Toplum vb.: başlık sonrası "1. A" formatı */
@@ -463,9 +588,12 @@ export function buildQuizzesFromPdfText(fullText: string): QuizSection[] {
   const kBodies = sliceQuestionBodies(fullText)
   const usedFallback = kBodies.length === 0
   const bodies = usedFallback ? sliceBlocksBeforeYanıtAnahtarı(fullText) : kBodies
-  const answerMaps = usedFallback
+  const answerMaps: (AnswerBundle | undefined)[] = usedFallback
     ? sliceLooseYanıtAnswerMaps(fullText)
-    : sliceKendimiziAnswerMaps(fullText)
+    : assignAnswerBundlesByUnit(bodies, [
+        ...sliceÇağdaşTürkRomanıColophonMaps(fullText),
+        ...sliceKendimiziAnswerMapsTagged(fullText),
+      ])
 
   const sections = bodies.map((b, idx) => {
     const questions = parseMcqBlock(b.body)
