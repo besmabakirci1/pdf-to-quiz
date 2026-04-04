@@ -53,12 +53,26 @@ function isNextOptionLine(peek: string): boolean {
 
 /**
  * «10. Gurbet…» yeni soru; «8. ciltlik…» şık gövdesindeki hacim sayısı (soru değil).
+ * «9. masay- fiilinin karşılığı…» gibi küçük harfle başlayan gerçek sorular için kök izi gerekir.
  * 12. Mart vb. zaten (?:[1-9]|10) ile 1–10 dışında tetiklenmez.
  */
+function restLooksLikeMcqQuestionStem(rest: string): boolean {
+  const compact = rest
+    .replace(/-\s*\n\s*/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+  return /hangis|aşağıdak|değildir|doğru\s+olarak|yanlış|verilmiştir|bulunmaktadır|karşılığı|ifadelerden|cümlesinde|sırasıyla|işaret|eşleştirm|verilen|için\s+aşağıdak|örneğinde|nelerdir|nedir/i.test(
+    compact,
+  )
+}
+
 function isLikelyMcqQuestionStemAfterNumber(line: string): boolean {
   const rest = line.replace(/^(?:[1-9]|10)\.\s*/i, '').trim()
   if (!rest) return true
-  if (/^[a-züğıöüşç]/.test(rest)) return false
+  if (/^ciltlik\b/i.test(rest)) return false
+  if (/^[a-züğıöüşç]/.test(rest)) {
+    return restLooksLikeMcqQuestionStem(rest)
+  }
   return true
 }
 
