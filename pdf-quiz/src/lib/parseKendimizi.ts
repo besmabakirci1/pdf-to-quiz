@@ -297,10 +297,14 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
           continue
         }
         if (isNextOptionLine(peek) || /^\n\s*\d+\.\s+(?!Ünite\b)/i.test(peek)) break
-        /** `$` satır sonu değil; tüm metin sonu — tek satır devamı hiç eşleşmeyip şık döngüsü erken biter */
-        const cont = peek.match(/^\n(\S[^\n]*)/i)
+        /**
+         * PDF satırları: «d.» sonrası «\\n \\nBir» gibi boş/seyrek satırlar; eski «\\n(\\S…)» modeli
+         * ikinci newline’da kırılıp «Bir» dışındaki devamı ve «e.» şıkkını yutuyordu.
+         */
+        const cont = peek.match(/^\n+(?:\s*\n)*\s*(\S[^\n]*)/i)
         if (!cont) break
         const contLine = cont[1].trim()
+        if (/^\s*[a-e](?:\.|\))\s*$/i.test(contLine)) break
         if (isNextOptionLine(`\n${contLine}`)) break
         optText = `${optText} ${contLine}`.replace(/\s+/g, ' ').trim()
         pos += cont[0].length
