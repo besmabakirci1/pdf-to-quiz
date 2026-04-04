@@ -23,4 +23,20 @@ Az önce bu ortamda npm install ve npm run dev çalıştı; sunucu http://localh
 
 Üst dizindeki README.md sadece proje fikrini anlatıyor (AÖF / PDF’ten soru çekme); asıl uygulama pdf-quiz içinde.
 
---
+## GitHub Pages (canlı site)
+
+1. **Kodu gönder:** `git push origin main`  
+   Uzak dal ile ayrıştıysan önce: `git pull --rebase origin main`, sonra push.
+
+2. **Repo ayarları:** GitHub’da repo → **Settings** → **Pages**  
+   **Build and deployment** → **Source:** **GitHub Actions** (“Deploy from a branch” değil).
+
+3. **Yayın:** `main`’e her push’ta `.github/workflows/pages.yml` çalışır: `pdf-quiz` içinde `npm ci` ve `npm run build`, çıktı `dist` GitHub Pages’e gider. **Actions** sekmesinden iş akışının yeşil bittiğini kontrol et.
+
+4. **Adres:** `https://<kullanıcı-adın>.github.io/<repo-adın>/`  
+   Örnek: repo adı `pdf-to-quiz` ise `https://<github-kullanıcı-adın>.github.io/pdf-to-quiz/`.  
+   Workflow, build sırasında `VITE_BASE_URL=/<repo-adı>/` verir; Vite `base` yolu böyle doğru olur.
+
+5. **Özel alan adı (isteğe bağlı):** Pages’ten custom domain eklenirse `vite.config.ts` içindeki `base` ve workflow’daki `VITE_BASE_URL` buna göre güncellenmeli (çoğunlukla kök için `/`).
+
+---
