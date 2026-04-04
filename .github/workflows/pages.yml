@@ -22,7 +22,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # Vite 8: Node ^20.19 veya >=22.12; '22' tek başına bazen 22.11’e düşüp build’i kırıyordu
+          node-version: '24'
           cache: npm
           cache-dependency-path: pdf-quiz/package-lock.json
       - name: Install and build
@@ -31,6 +32,8 @@ jobs:
           # Proje sitesi: https://<kullanıcı>.github.io/<repo-adı>/
           VITE_BASE_URL: /${{ github.event.repository.name }}/
         run: |
+          node -v
+          test -f package-lock.json || (echo 'package-lock.json eksik' && exit 1)
           npm ci
           npm run build
       - uses: actions/upload-pages-artifact@v3
