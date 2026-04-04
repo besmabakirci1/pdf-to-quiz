@@ -51,6 +51,22 @@ function isNextOptionLine(peek: string): boolean {
   return OPT_LINE_START.test(peek)
 }
 
+/**
+ * «10. Gurbet…» yeni soru; «8. ciltlik…» şık gövdesindeki hacim sayısı (soru değil).
+ * 12. Mart vb. zaten (?:[1-9]|10) ile 1–10 dışında tetiklenmez.
+ */
+function isLikelyMcqQuestionStemAfterNumber(line: string): boolean {
+  const rest = line.replace(/^(?:[1-9]|10)\.\s*/i, '').trim()
+  if (!rest) return true
+  if (/^[a-züğıöüşç]/.test(rest)) return false
+  return true
+}
+
+function peekStartsWithNumberedQuestionHead(peek: string): boolean {
+  const m = peek.match(/^\n\s*((?:[1-9]|10)\.\s+[^\n]+)/i)
+  return m !== null && isLikelyMcqQuestionStemAfterNumber(m[1])
+}
+
 /** Kiril С (U+0421) PDF’te Latin «c.» diye çıkabiliyor; «b. c.» satırı c etiketini yutup şıkları d/e diye kaydırıyor */
 const CYRILLIC_CAPITAL_ES = '\u0421'
 
@@ -217,6 +233,67 @@ export function normalizeQuestionBlockLayout(s: string): string {
   return t.trim()
 }
 
+/**
+ * PDF sayfa altlığı: «<<PAGE>> … N. Ünite … Kendimizi Sınayalım Yanıt Anahtarı» gövde ortasında
+ * çıkabiliyor; gerçek yanıt başlığı değil, MCQ 9–10 bundan sonra geliyor (9. ünite).
+ */
+function isRunningÜnitePageFooterBeforeYanıt(tail: string, yIdx: number): boolean {
+  const back = tail.slice(Math.max(0, yIdx - 900), yIdx)
+  return /<<PAGE:\d+>>/.test(back) && /\n\s*\d+\.\s*Ünite\b/i.test(back)
+}
+
+/** Basılı yanıt listesi: «1. a» + «Yanıtınız» (soru gövdesinde yok). */
+function findPrintedAnswerKeyStart(tail: string): number {
+  const m = tail.match(/\n\s*1\.\s+[a-e]\b\s*\n\s*Yanıtınız/i)
+  return m?.index !== undefined ? m.index : -1
+}
+
+function endRespectingEarlyOkumaParçası(
+  sub: string,
+  endPrimary: number,
+  oIdx: number,
+): number {
+  if (oIdx < 0 || oIdx >= endPrimary) return endPrimary
+  const mid = sub.slice(oIdx, endPrimary)
+  if (/\n\s*(?:9|10)\.\s+(?!Ünite\b)/i.test(mid)) return endPrimary
+  return oIdx
+}
+
+/**
+ * «Kendimizi Sınayalım» gövdesinin bittiği konum (tail içi offset).
+ * Sayfa sınırında geçen «Okuma Parçası» bazen 8. sorudan sonra gelip 9–10’u kesiyordu;
+ * bu durumda yalnızca «Yanıt Anahtarı» sınırı kullanılır.
+ */
+function findKendimiziQuizBlockEnd(tail: string): number {
+  const yRe =
+    /\n\s*Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı(?=\s|$)/i
+  const oRe = /\n\s*Okuma\s+Parçası(?=\s|$)/i
+  const cap = Math.min(tail.length, 120_000)
+  const sub = tail.slice(0, cap)
+
+  const y0 = sub.search(yRe)
+  const oIdx = sub.search(oRe)
+  const akIdx = findPrintedAnswerKeyStart(sub)
+  const firstYanıtIsFooterNoise =
+    y0 >= 0 && isRunningÜnitePageFooterBeforeYanıt(sub, y0)
+
+  let result: number
+  if (y0 < 0 || firstYanıtIsFooterNoise) {
+    let end = akIdx >= 0 ? akIdx : cap
+    end = endRespectingEarlyOkumaParçası(sub, end, oIdx)
+    result = end
+  } else {
+    const yIdx = y0
+    if (oIdx < 0) result = yIdx
+    else if (oIdx < yIdx) {
+      const mid = sub.slice(oIdx, yIdx)
+      result = /\n\s*(?:9|10)\.\s+(?!Ünite\b)/i.test(mid) ? yIdx : oIdx
+    } else result = yIdx
+  }
+
+  return result
+}
+
 function sliceQuestionBodies(full: string): { unitTitle: string; body: string }[] {
   const out: { unitTitle: string; body: string }[] = []
   KENDIMIZI_QUIZ_HEADER.lastIndex = 0
@@ -233,13 +310,7 @@ function sliceQuestionBodies(full: string): { unitTitle: string; body: string }[
       m.index + m[0].length + q1.index + (q1[0].length - q1[1].length)
 
     const tail = full.slice(globalStart)
-    const endMatch = tail.match(
-      new RegExp(
-        String.raw`\n\s*(?:Okuma\s+Parçası|Kend(?:imizi|imzi|imızı|mizi|mz)\s+S[ıi]nayalım\s+Yanıt\s+Anahtarı)(?=\s|$)`,
-        'i',
-      ),
-    )
-    const end = endMatch ? endMatch.index : Math.min(tail.length, 120_000)
+    const end = findKendimiziQuizBlockEnd(tail)
     const rawBase = tail.slice(0, end)
     const unitFromBody = rawBase.match(/\n\s*(\d+\.\s*Ünite\b[^\n]+)/i)
     const unitTitleResolved = (unitFromBody?.[1] ?? unitTitle).trim()
@@ -280,8 +351,11 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
     const options: QuizOption[] = []
     while (pos < text.length) {
       const ahead = text.slice(pos)
-      const nextQ = ahead.match(/^\n\s*(\d+)\.\s+(?!Ünite\b)/i)
-      if (nextQ && options.length > 0) break
+      const nextQLine = ahead.match(/^\n\s*((?:[1-9]|10)\.\s+[^\n]+)/i)
+      if (nextQLine && options.length > 0) {
+        const nql = nextQLine[1]
+        if (/\bÜnite\b/i.test(nql) || isLikelyMcqQuestionStemAfterNumber(nql)) break
+      }
 
       const om = ahead.match(/^\n\s*([a-e])(?:\.|\))\s*([^\n]*)/i)
       if (!om) break
@@ -296,7 +370,7 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
           pos += skipMark[0].length
           continue
         }
-        if (isNextOptionLine(peek) || /^\n\s*\d+\.\s+(?!Ünite\b)/i.test(peek)) break
+        if (isNextOptionLine(peek) || peekStartsWithNumberedQuestionHead(peek)) break
         /**
          * PDF satırları: «d.» sonrası «\\n \\nBir» gibi boş/seyrek satırlar; eski «\\n(\\S…)» modeli
          * ikinci newline’da kırılıp «Bir» dışındaki devamı ve «e.» şıkkını yutuyordu.
@@ -306,6 +380,17 @@ export function parseMcqBlock(body: string): QuizQuestion[] {
         const contLine = cont[1].trim()
         if (/^\s*[a-e](?:\.|\))\s*$/i.test(contLine)) break
         if (isNextOptionLine(`\n${contLine}`)) break
+        if (
+          /^(?:[1-9]|10)\.\s*$/i.test(contLine) ||
+          (/\bÜnite\b/i.test(contLine) && /^(?:[1-9]|10)\./i.test(contLine))
+        )
+          break
+        if (
+          /^(?:[1-9]|10)\.\s+/i.test(contLine) &&
+          isLikelyMcqQuestionStemAfterNumber(contLine) &&
+          !/\bÜnite\b/i.test(contLine)
+        )
+          break
         optText = `${optText} ${contLine}`.replace(/\s+/g, ' ').trim()
         pos += cont[0].length
       }
