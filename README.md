@@ -1,5 +1,7 @@
 # pdf-to-quiz
 aöf sınavlarına çalışırken pdften üni sonu sorularını çekebilecek otomasyon 
+
+https://besmabakirci1.github.io/pdf-to-quiz/
 --
 
 Bu repoda uygulama pdf-quiz klasöründe: React + TypeScript + Vite ve PDF için pdfjs-dist kullanıyor. Yerelde çalıştırmak için adımlar şöyle:
