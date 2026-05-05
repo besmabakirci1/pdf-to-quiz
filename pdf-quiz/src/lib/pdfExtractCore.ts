@@ -2,7 +2,6 @@
  * Tarayıcı dışında da kullanılabilir: worker / Vite ?url içermez.
  */
 
-/* eslint-disable no-control-regex -- PDF.js çıktısındaki C0 kontrol karakterleri bilinçle temizlenir */
 export function sanitizePdfExtractedText(s: string): string {
   return s
     /**
@@ -20,7 +19,6 @@ export function sanitizePdfExtractedText(s: string): string {
     .replace(/\u008d/g, 'i')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001b\u007f]/g, '')
 }
-/* eslint-enable no-control-regex */
 
 const LINE_Y_TOL = 4
 
